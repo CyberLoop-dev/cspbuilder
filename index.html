@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>cspbuilder: Content-Security-Policy builder</title>
+<style>
+:root{--bg:#f8f4f7;--card:#fff;--fg:#221330;--mut:#7a6a85;--line:#eadfe8;--acc:#be123c;--soft:#fdf0f3;--warn:#b45309;--ok:#15803d}
+@media (prefers-color-scheme:dark){:root{--bg:#140b1c;--card:#1e1229;--fg:#f3e9f7;--mut:#a995b6;--line:#38244a;--acc:#fb7185;--soft:#2a1630;--warn:#fbbf24;--ok:#4ade80}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 ui-sans-serif,system-ui,"Segoe UI",Helvetica,Arial,sans-serif}
+main{max-width:1000px;margin:0 auto;padding:26px 16px 60px}
+h1{margin:0;font-size:30px;letter-spacing:-.5px}.sub{color:var(--mut);margin:4px 0 14px}
+.grid{display:grid;grid-template-columns:1.2fr 1fr;gap:14px;align-items:start}
+@media (max-width:820px){.grid{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px;margin-bottom:12px}
+h2{margin:0 0 6px;font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--mut)}
+.dir{border-top:1px solid var(--line);padding:10px 0}.dir:first-of-type{border-top:0}
+.dir b{font:600 14px ui-monospace,Menlo,Consolas,monospace}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.chip{border:1px solid var(--line);background:transparent;color:var(--fg);border-radius:999px;padding:3px 10px;font:12px ui-monospace,Menlo,Consolas,monospace;cursor:pointer}
+.chip.on{background:var(--acc);border-color:var(--acc);color:#fff}
+.add{border:1px dashed var(--line);background:transparent;color:var(--fg);border-radius:999px;padding:3px 10px;font:12px ui-monospace,Menlo,Consolas,monospace;width:150px}
+button.p{background:var(--acc);color:#fff;border:0;border-radius:10px;padding:8px 14px;font:700 14px inherit;cursor:pointer}
+button.g{background:transparent;color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:8px 14px;font:600 14px inherit;cursor:pointer}
+pre{margin:0;background:var(--soft);border-radius:10px;padding:12px;white-space:pre-wrap;word-break:break-word;font:13px/1.55 ui-monospace,Menlo,Consolas,monospace}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.w{color:var(--warn);font-size:14px;margin:4px 0}.good{color:var(--ok);font-size:14px}
+label.t{font-size:14px;display:flex;gap:6px;align-items:center;margin-top:10px}
+</style>
+</head>
+<body>
+<main>
+  <h1>🛡️ cspbuilder</h1>
+  <p class="sub">Pick sources per directive, start from a preset, copy the header. Warnings flag risky choices.</p>
+  <div class="row" id="presets"></div>
+  <div class="grid">
+    <div class="card" id="dirs"></div>
+    <div>
+      <div class="card"><h2>Header</h2><pre id="out"></pre>
+        <label class="t"><input type="checkbox" id="ro"> Report-Only mode (log violations, do not block)</label>
+        <div class="row" style="margin-top:10px"><button class="p" id="copy">Copy header</button><button class="g" id="copyMeta">Copy &lt;meta&gt; tag</button></div>
+      </div>
+      <div class="card"><h2>Checks</h2><div id="warn"></div></div>
+    </div>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const DIRS = {
+  "default-src": ["'none'", "'self'", "https:"],
+  "script-src": ["'none'", "'self'", "'unsafe-inline'", "'unsafe-eval'", "'strict-dynamic'", "https:"],
+  "style-src": ["'none'", "'self'", "'unsafe-inline'", "https:"],
+  "img-src": ["'none'", "'self'", "data:", "blob:", "https:"],
+  "font-src": ["'none'", "'self'", "data:", "https:"],
+  "connect-src": ["'none'", "'self'", "https:", "wss:"],
+  "media-src": ["'none'", "'self'", "https:"],
+  "object-src": ["'none'", "'self'"],
+  "frame-src": ["'none'", "'self'", "https:"],
+  "frame-ancestors": ["'none'", "'self'"],
+  "base-uri": ["'none'", "'self'"],
+  "form-action": ["'none'", "'self'"]
+};
+const PRESETS = {
+  "Strict start": {"default-src": ["'self'"], "img-src": ["'self'", "data:"], "object-src": ["'none'"], "base-uri": ["'self'"], "frame-ancestors": ["'self'"], "form-action": ["'self'"]},
+  "Lockdown": {"default-src": ["'none'"], "script-src": ["'self'"], "style-src": ["'self'"], "img-src": ["'self'"], "connect-src": ["'self'"], "base-uri": ["'none'"], "form-action": ["'self'"], "frame-ancestors": ["'none'"]},
+  "Static site + HTTPS images": {"default-src": ["'self'"], "img-src": ["'self'", "data:", "https:"], "font-src": ["'self'", "https:"], "style-src": ["'self'", "'unsafe-inline'"], "object-src": ["'none'"], "base-uri": ["'self'"], "frame-ancestors": ["'self'"], "form-action": ["'self'"]},
+  "Empty": {}
+};
+let state = {};
+function load(p){ state = {}; for (const [k, v] of Object.entries(PRESETS[p])) state[k] = new Set(v); build(); }
+function toggle(d, tok){
+  const s = state[d] || (state[d] = new Set());
+  if (s.has(tok)) s.delete(tok);
+  else { if (tok === "'none'") s.clear(); else s.delete("'none'"); s.add(tok); }
+  if (!s.size) delete state[d];
+  build();
+}
+function build(){
+  const box = $("dirs"); box.textContent = "";
+  const h = document.createElement("h2"); h.textContent = "Directives"; box.appendChild(h);
+  for (const [d, opts] of Object.entries(DIRS)) {
+    const wrap = document.createElement("div"); wrap.className = "dir";
+    const b = document.createElement("b"); b.textContent = d; wrap.appendChild(b);
+    const chips = document.createElement("div"); chips.className = "chips";
+    const cur = state[d] || new Set();
+    const all = [...opts, ...[...cur].filter(x => !opts.includes(x))];
+    for (const tok of all) {
+      const c = document.createElement("button"); c.className = "chip" + (cur.has(tok) ? " on" : ""); c.textContent = tok;
+      c.onclick = () => toggle(d, tok); chips.appendChild(c);
+    }
+    const inp = document.createElement("input"); inp.className = "add"; inp.placeholder = "+ host, e.g. cdn.example.com"; inp.setAttribute("aria-label", "add source to " + d);
+    inp.addEventListener("keydown", e => { if (e.key === "Enter") { const v = inp.value.trim(); if (/^[^\s;,'"]+$/.test(v)) toggle(d, v); else inp.value = ""; } });
+    chips.appendChild(inp); wrap.appendChild(chips); box.appendChild(wrap);
+  }
+  output();
+}
+function policy(){ return Object.entries(state).filter(([, s]) => s.size).map(([d, s]) => d + " " + [...s].join(" ")).join("; "); }
+function output(){
+  const p = policy(), name = $("ro").checked ? "Content-Security-Policy-Report-Only" : "Content-Security-Policy";
+  $("out").textContent = p ? name + ": " + p : "(empty policy: nothing is restricted)";
+  const w = $("warn"); w.textContent = "";
+  const add = (txt, good) => { const d = document.createElement("div"); d.className = good ? "good" : "w"; d.textContent = (good ? "✓ " : "⚠ ") + txt; w.appendChild(d); };
+  const has = (d, t) => (state[d] || new Set()).has(t);
+  const scriptish = has("script-src", "'unsafe-inline'") || (!state["script-src"] && has("default-src", "'unsafe-inline'"));
+  let n = 0;
+  if (scriptish) { add("'unsafe-inline' in script sources allows inline scripts, which defeats most XSS protection. Prefer nonces or hashes.", 0); n++; }
+  if (has("script-src", "'unsafe-eval'") || has("default-src", "'unsafe-eval'")) { add("'unsafe-eval' allows eval() and similar string-to-code APIs.", 0); n++; }
+  for (const [d, s] of Object.entries(state)) {
+    if (s.has("*")) { add(d + " contains * which allows any host.", 0); n++; }
+    if ((d === "script-src" || d === "default-src") && (s.has("https:") || s.has("data:"))) { add(d + " allows every https:/data: source, so any HTTPS host can serve scripts.", 0); n++; }
+  }
+  if (!has("object-src", "'none'") && !has("default-src", "'none'")) { add("Set object-src 'none' to block legacy plugins.", 0); n++; }
+  if (!state["base-uri"]) { add("Add base-uri 'self' or 'none' to stop <base> tag injection.", 0); n++; }
+  if (!state["frame-ancestors"]) { add("Add frame-ancestors to control who can embed your site (clickjacking).", 0); n++; }
+  if (!state["default-src"]) { add("No default-src: directives you do not list are unrestricted.", 0); n++; }
+  if (!n) add("No obvious problems found. Test with Report-Only first.", 1);
+}
+async function copy(btn, text, label){
+  try { await navigator.clipboard.writeText(text); btn.textContent = "Copied ✓"; } catch (e) { btn.textContent = "Copy failed"; }
+  setTimeout(() => btn.textContent = label, 1300);
+}
+const pr = $("presets");
+for (const name of Object.keys(PRESETS)) { const b = document.createElement("button"); b.className = "g"; b.textContent = name; b.onclick = () => load(name); pr.appendChild(b); }
+$("ro").onchange = output;
+$("copy").onclick = e => copy(e.target, $("out").textContent.startsWith("(") ? "" : $("out").textContent, "Copy header");
+$("copyMeta").onclick = e => { const p = policy().replace(/(^|; )(frame-ancestors|report-uri|sandbox)[^;]*/g, "").replace(/^; /, ""); copy(e.target, '<meta http-equiv="Content-Security-Policy" content="' + p.replace(/"/g, "&quot;") + '">', "Copy <meta> tag"); };
+load("Strict start");
+</script>
+</body>
+</html>
